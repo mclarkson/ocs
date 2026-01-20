@@ -13,20 +13,26 @@ import (
 var bgColor = tcell.NewRGBColor(25, 34, 48)
 
 type model struct {
-	table           *tview.Table
-	app             *tview.Application
-	sessions        Sessions
-	selectedCommand string
-	selectedIndex   int
-	shouldRefresh   bool
-	showHelp        bool
-	helpModal       *tview.Modal
-	header          *tview.TextView
-	flex            *tview.Flex
-	visible         [4]bool
-	currentWidth    int
-	dir             string
-	dirOverridden   bool
+	table            *tview.Table
+	app              *tview.Application
+	sessions         Sessions
+	filteredSessions Sessions
+	selectedCommand  string
+	selectedIndex    int
+	shouldRefresh    bool
+	showHelp         bool
+	helpModal        *tview.Modal
+	deleteModal      *tview.Modal
+	header           *tview.TextView
+	flex             *tview.Flex
+	visible          [4]bool
+	currentWidth     int
+	dir              string
+	dirOverridden    bool
+	searchInput      *tview.InputField
+	searchActive     bool
+	searchQuery      string
+	sessionToDelete  *Session
 }
 
 func populateTable(table *tview.Table, sessions Sessions, visible [4]bool, width int) {
@@ -149,7 +155,7 @@ func populateTable(table *tview.Table, sessions Sessions, visible [4]bool, width
 	}
 }
 
-func newModel(dir string, dirOverridden bool, sessions Sessions, cursor int) model {
+func newModel(dir string, dirOverridden bool, sessions Sessions, cursor int, lastSearch string) model {
 	width := 80 // default initial width
 
 	header := tview.NewTextView().SetScrollable(false)
@@ -159,6 +165,18 @@ func newModel(dir string, dirOverridden bool, sessions Sessions, cursor int) mod
 	blank := tview.NewTextView()
 	blank.SetBackgroundColor(bgColor)
 	blank.SetText("")
+
+	searchInput := tview.NewInputField().
+		SetLabel("Search: ").
+		SetFieldBackgroundColor(tcell.NewRGBColor(40, 50, 70)).
+		SetLabelColor(tcell.ColorYellow)
+	searchInput.SetBackgroundColor(bgColor)
+
+	// Restore previous search query if any
+	if lastSearch != "" {
+		searchInput.SetText(lastSearch)
+	}
+
 	table := tview.NewTable().SetBorders(false).SetFixed(2, 0).SetSelectable(true, false)
 	table.SetBackgroundColor(bgColor)
 	app := tview.NewApplication()
@@ -167,36 +185,57 @@ func newModel(dir string, dirOverridden bool, sessions Sessions, cursor int) mod
 	flex.SetBackgroundColor(bgColor)
 	flex.AddItem(header, 1, 0, false)
 	flex.AddItem(blank, 1, 0, false)
+	flex.AddItem(searchInput, 1, 0, false)
 	flex.AddItem(table, 0, 1, true)
 
 	helpModal := tview.NewModal().
-		SetText("Help:\nEnter: Open selected session\nv: View selected session\nn: New opencode\nr: Refresh\nq: Quit\n?: Help\nEsc: Quit\nCtrl+D: Quit\ni: Toggle ID\n t: Toggle Title\n d: Toggle Directory\n c: Toggle Created").
+		SetText("Help:\nEnter: Open selected session\nv: View selected session\nn: New opencode\nr: Refresh\n/: Fuzzy search (title & directory)\nDel/x: Delete selected session\nq: Quit\n?: Help\nEsc: Quit\nCtrl+D: Quit\ni: Toggle ID\nt: Toggle Title\nd: Toggle Directory\nc: Toggle Created").
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 			app.SetRoot(flex, true).SetFocus(table)
 		})
 
+	deleteModal := tview.NewModal().
+		SetText("Delete this session?").
+		AddButtons([]string{"Delete", "Cancel"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			app.SetRoot(flex, true).SetFocus(table)
+		})
+
 	visible := [4]bool{false, true, true, true}
-	populateTable(table, sessions, visible, width)
+
+	// Apply search filter if there's a lastSearch
+	filteredSessions := sessions
+	if lastSearch != "" {
+		filteredSessions = filterSessions(sessions, lastSearch)
+	}
+
+	populateTable(table, filteredSessions, visible, width)
 
 	if cursor >= 0 && cursor < len(sessions) {
 		table.Select(cursor+2, 0)
 	}
 
 	return model{
-		table:         table,
-		app:           app,
-		sessions:      sessions,
-		selectedIndex: -1,
-		shouldRefresh: false,
-		showHelp:      false,
-		helpModal:     helpModal,
-		header:        header,
-		flex:          flex,
-		visible:       visible,
-		currentWidth:  width,
-		dir:           dir,
-		dirOverridden: dirOverridden,
+		table:            table,
+		app:              app,
+		sessions:         sessions,
+		filteredSessions: filteredSessions,
+		selectedIndex:    -1,
+		shouldRefresh:    false,
+		showHelp:         false,
+		helpModal:        helpModal,
+		deleteModal:      deleteModal,
+		header:           header,
+		flex:             flex,
+		visible:          visible,
+		currentWidth:     width,
+		dir:              dir,
+		dirOverridden:    dirOverridden,
+		searchInput:      searchInput,
+		searchActive:     false,
+		searchQuery:      lastSearch,
+		sessionToDelete:  nil,
 	}
 }
 
@@ -247,4 +286,40 @@ func getCreatedTime(created interface{}) string {
 		}
 	}
 	return ""
+}
+
+// fuzzyMatch checks if query matches text using fuzzy matching
+// Returns true if all characters in query appear in text in order (case-insensitive)
+func fuzzyMatch(text, query string) bool {
+	if query == "" {
+		return true
+	}
+	textLower := strings.ToLower(text)
+	queryLower := strings.ToLower(query)
+
+	textPos := 0
+	queryPos := 0
+
+	for queryPos < len(queryLower) && textPos < len(textLower) {
+		if textLower[textPos] == queryLower[queryPos] {
+			queryPos++
+		}
+		textPos++
+	}
+
+	return queryPos == len(queryLower)
+}
+
+func filterSessions(sessions Sessions, query string) Sessions {
+	if query == "" {
+		return sessions
+	}
+	var filtered Sessions
+	for _, s := range sessions {
+		// Search in both title and directory
+		if fuzzyMatch(s.Title, query) || fuzzyMatch(s.Directory, query) {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }

@@ -50,8 +50,42 @@ func logSessions(sessions Sessions, debug bool) {
 	}
 }
 
-func runProgram(dir string, dirOverridden bool, sessions Sessions, lastCursor int) model {
-	m := newModel(dir, dirOverridden, sessions, lastCursor)
+func runProgram(dir string, dirOverridden bool, sessions Sessions, lastCursor int, lastSearch string) model {
+	m := newModel(dir, dirOverridden, sessions, lastCursor, lastSearch)
+
+	// Set up search input change handler
+	m.searchInput.SetChangedFunc(func(text string) {
+		m.searchQuery = text
+		m.filteredSessions = filterSessions(m.sessions, text)
+		m.table.Clear()
+		populateTable(m.table, m.filteredSessions, m.visible, m.currentWidth)
+		if len(m.filteredSessions) > 0 {
+			m.table.Select(2, 0) // Select first result
+		}
+	})
+
+	// Set up search input done handler (Enter or Esc)
+	m.searchInput.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEnter || key == tcell.KeyEscape {
+			m.searchActive = false
+			m.app.SetFocus(m.table)
+		}
+	})
+
+	// Set up delete modal handler
+	m.deleteModal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+		if buttonIndex == 0 && m.sessionToDelete != nil { // "Delete" button
+			if err := DeleteSession(m.dir, m.sessionToDelete.ID); err != nil {
+				log.Printf("Error deleting session: %v", err)
+			}
+			m.shouldRefresh = true
+			m.app.Stop()
+		} else {
+			// "Cancel" button or closed
+			m.sessionToDelete = nil
+			m.app.SetRoot(m.flex, true).SetFocus(m.table)
+		}
+	})
 
 	m.app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
 		width, _ := screen.Size()
@@ -60,7 +94,7 @@ func runProgram(dir string, dirOverridden bool, sessions Sessions, lastCursor in
 		}
 		m.currentWidth = width
 		m.table.Clear()
-		populateTable(m.table, m.sessions, m.visible, width)
+		populateTable(m.table, m.filteredSessions, m.visible, width)
 		// Update header
 		left := "OpenCode Session browser"
 		right := "Press ? for help"
@@ -78,16 +112,30 @@ func runProgram(dir string, dirOverridden bool, sessions Sessions, lastCursor in
 		switch event.Key() {
 		case tcell.KeyEnter:
 			row, _ := m.table.GetSelection()
-			if row > 1 && row-2 < len(m.sessions) {
-				selectedSession := m.sessions[row-2]
+			if row > 1 && row-2 < len(m.filteredSessions) {
+				selectedSession := m.filteredSessions[row-2]
 				m.selectedCommand = fmt.Sprintf("cd '%s' ; opencode -s %s", selectedSession.Directory, selectedSession.ID)
-				m.selectedIndex = row - 2
+				// Find original index in m.sessions
+				for i, s := range m.sessions {
+					if s.ID == selectedSession.ID {
+						m.selectedIndex = i
+						break
+					}
+				}
 				m.app.Stop()
 			}
 		case tcell.KeyEscape:
 			m.app.Stop()
 		case tcell.KeyCtrlD:
 			m.app.Stop()
+		case tcell.KeyDelete:
+			row, _ := m.table.GetSelection()
+			if row > 1 && row-2 < len(m.filteredSessions) {
+				selectedSession := m.filteredSessions[row-2]
+				m.sessionToDelete = &selectedSession
+				m.deleteModal.SetText(fmt.Sprintf("Delete session?\n\nTitle: %s\nID: %s\n\nThis will permanently delete the session file and data.", selectedSession.Title, selectedSession.ID))
+				m.app.SetRoot(m.deleteModal, false).SetFocus(m.deleteModal)
+			}
 		}
 		switch event.Rune() {
 		case 'q', 'Q':
@@ -98,28 +146,39 @@ func runProgram(dir string, dirOverridden bool, sessions Sessions, lastCursor in
 		case 'n', 'N':
 			m.selectedCommand = "opencode"
 			m.app.Stop()
+		case '/':
+			m.searchActive = true
+			m.app.SetFocus(m.searchInput)
 		case 'i', 'I':
 			m.visible[0] = !m.visible[0]
 			m.table.Clear()
-			populateTable(m.table, m.sessions, m.visible, m.currentWidth)
+			populateTable(m.table, m.filteredSessions, m.visible, m.currentWidth)
 		case 't', 'T':
 			m.visible[1] = !m.visible[1]
 			m.table.Clear()
-			populateTable(m.table, m.sessions, m.visible, m.currentWidth)
+			populateTable(m.table, m.filteredSessions, m.visible, m.currentWidth)
 		case 'd', 'D':
 			m.visible[2] = !m.visible[2]
 			m.table.Clear()
-			populateTable(m.table, m.sessions, m.visible, m.currentWidth)
+			populateTable(m.table, m.filteredSessions, m.visible, m.currentWidth)
 		case 'c', 'C':
 			m.visible[3] = !m.visible[3]
 			m.table.Clear()
-			populateTable(m.table, m.sessions, m.visible, m.currentWidth)
+			populateTable(m.table, m.filteredSessions, m.visible, m.currentWidth)
 		case '?':
 			m.app.SetRoot(m.helpModal, false).SetFocus(m.helpModal)
+		case 'x', 'X':
+			row, _ := m.table.GetSelection()
+			if row > 1 && row-2 < len(m.filteredSessions) {
+				selectedSession := m.filteredSessions[row-2]
+				m.sessionToDelete = &selectedSession
+				m.deleteModal.SetText(fmt.Sprintf("Delete session?\n\nTitle: %s\nID: %s\n\nThis will permanently delete the session file and data.", selectedSession.Title, selectedSession.ID))
+				m.app.SetRoot(m.deleteModal, false).SetFocus(m.deleteModal)
+			}
 		case 'v', 'V':
 			row, _ := m.table.GetSelection()
-			if row > 1 && row-2 < len(m.sessions) {
-				selectedSession := m.sessions[row-2]
+			if row > 1 && row-2 < len(m.filteredSessions) {
+				selectedSession := m.filteredSessions[row-2]
 				if _, err := exec.LookPath("python3"); err == nil {
 					if _, err := exec.LookPath("ocs_messages.py"); err == nil {
 						pager := "more"
@@ -134,7 +193,13 @@ func runProgram(dir string, dirOverridden bool, sessions Sessions, lastCursor in
 						} else {
 							m.selectedCommand = fmt.Sprintf("ocs_messages.py %s | %s", selectedSession.ID, pager)
 						}
-						m.selectedIndex = row - 2
+						// Find original index in m.sessions
+						for i, s := range m.sessions {
+							if s.ID == selectedSession.ID {
+								m.selectedIndex = i
+								break
+							}
+						}
 						m.app.Stop()
 					}
 				}
@@ -174,19 +239,23 @@ func main() {
 	logSessions(sessions, debug)
 
 	lastCursor := -1
+	lastSearch := ""
 	for {
 		if debug {
 			log.Printf("Setting cursor to %d", lastCursor)
 		}
-		finalModel := runProgram(dir, dirOverridden, sessions, lastCursor)
+		finalModel := runProgram(dir, dirOverridden, sessions, lastCursor, lastSearch)
 		if finalModel.shouldRefresh {
 			sessions, err = loadSessions(dir)
 			if err != nil {
 				log.Fatalf("Error reloading sessions: %v", err)
 			}
 			lastCursor = -1
+			// Preserve search query when refreshing
+			lastSearch = finalModel.searchQuery
 		} else if finalModel.selectedCommand != "" {
 			lastCursor = handleCommand(finalModel.selectedCommand, finalModel.selectedIndex)
+			lastSearch = ""
 		} else {
 			break
 		}

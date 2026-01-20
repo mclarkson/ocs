@@ -80,3 +80,46 @@ func (s Sessions) Sort() {
 		return ti.After(tj)
 	})
 }
+
+// DeleteSession deletes a session by removing its JSON file and associated directories
+func DeleteSession(dir string, sessionID string) error {
+	// Find and delete the session JSON file
+	var sessionPath string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && filepath.Ext(path) == ".json" {
+			session, err := NewSession(path)
+			if err != nil {
+				return nil // continue
+			}
+			if session.ID == sessionID {
+				sessionPath = path
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if sessionPath == "" {
+		return os.ErrNotExist
+	}
+
+	// Delete the session JSON file
+	if err := os.Remove(sessionPath); err != nil {
+		return err
+	}
+
+	// Delete the associated session directory (contains messages, etc.)
+	sessionDir := filepath.Join(filepath.Dir(sessionPath), sessionID)
+	if _, err := os.Stat(sessionDir); err == nil {
+		if err := os.RemoveAll(sessionDir); err != nil {
+			log.Printf("Warning: could not delete session directory %s: %v", sessionDir, err)
+		}
+	}
+
+	return nil
+}

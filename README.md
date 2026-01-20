@@ -7,6 +7,8 @@
 
 ## Features
 - **Interactive Table**: Browse sessions with columns for ID, Title, Directory (abbreviated with ~), and Created timestamp.
+- **Fuzzy Search**: Press / to activate interactive search that filters sessions by title and directory in real-time with case-insensitive character-by-character matching.
+- **Session Deletion**: Press x or Delete to delete a session with confirmation modal, removing both JSON file and associated data directory.
 - **Column Toggling**: Toggle visibility of columns with i (ID), t (Title), d (Directory), c (Created).
 - **Help Modal**: Press ? for keybindings help.
 - **Full-Screen Mode**: Uses alternate screen for a clean, distraction-free interface.
@@ -27,6 +29,8 @@
 ## Usage
 - **Navigation**: Use arrow keys or vim-style keys (h/j/k/l) to move in the table.
 - **Select Session**: Press Enter on a session to launch it in opencode.
+- **Search**: Press / to activate fuzzy search, type to filter sessions, Enter or Esc to exit search.
+- **Delete Session**: Press x or Delete on a session to delete it (with confirmation).
 - **View Session**: Press v to view the selected session's messages.
 - **New Session**: Press n to start a new opencode session.
 - **Refresh**: Press r to reload sessions.
